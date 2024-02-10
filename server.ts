@@ -280,14 +280,6 @@ function genMainContent(
     "<![CDATA[",
     tag(
       "div",
-      tag("b", sanitize(post.author.displayName || ""), " "),
-      tag("i", `@${post.author.handle || "unknown"} `),
-      tag(
-        "a",
-        { href: uriToPostLink(post.uri, usePsky) },
-        post.isReply ? "replied" : "posted",
-      ),
-      ":<br>",
       tag("p", post.text, post.embed),
       post.media,
     ),
