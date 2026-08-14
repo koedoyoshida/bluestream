@@ -378,6 +378,15 @@ Deno.serve(async (request: Request) => {
       headers: { "content-type": "text/plain" },
     });
   }
+  if (pathname === "/fallback.png") {
+    const file = await Deno.readFile("./fallback.png");
+    return new Response(file, {
+      headers: {
+        "content-type": "image/png",
+        "cache-control": "public, max-age=86400",
+      },
+    });
+  }
 
   const { did, handle } = await getActor(pathname.replace(/^\//, ""));
   if (did === "") {
@@ -469,11 +478,13 @@ Deno.serve(async (request: Request) => {
               includeEmbed,
             ),
           ),
-          ...getPost(post).mediaarr.map((image) =>
-            `<enclosure type="image/jpeg" length="0" url="${
-              fullMedia ? image.fullsize : image.thumb
-            }"/>`
-          ).join(""),
+          ...(getPost(post).mediaarr.length > 0
+            ? getPost(post).mediaarr.map((image) =>
+              `<enclosure type="image/jpeg" length="0" url="${
+                fullMedia ? image.fullsize : image.thumb
+              }"/>`
+            ).join("")
+            : `<enclosure type="image/png" length="0" url="${origin}/fallback.png"/>`),
           tag("link", uriToPostLink(post.uri, usePsky)),
           tag(
             "guid",

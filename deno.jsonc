@@ -6,7 +6,7 @@
   },
   "tasks": {
     // runner
-    "dev": "deno run --allow-env=DENO_DEPLOYMENT_ID,BLUESKY_IDENTIFIER,BLUESKY_PASSWORD --allow-read=index.html,.env --allow-net=0.0.0.0,bsky.social --watch server.ts",
+    "dev": "deno run --allow-env=DENO_DEPLOYMENT_ID,BLUESKY_IDENTIFIER,BLUESKY_PASSWORD --allow-read=index.html,fallback.png,.env --allow-net=0.0.0.0,bsky.social --watch server.ts",
     // development
     "test": "deno test --allow-env=DENO_DEPLOYMENT_ID,BLUESKY_IDENTIFIER,BLUESKY_PASSWORD --allow-read=.env --allow-net=bsky.social --allow-none",
     "cov": "deno task test --coverage=cov_profile; deno coverage cov_profile",
