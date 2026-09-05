@@ -508,7 +508,16 @@ Deno.serve(async (request: Request) => {
     try {
       const images = await Promise.all(
         urls.map(async (url) => {
-          const res = await fetch(url);
+          // Bluesky's CDN may serve WebP via content negotiation, which
+          // ImageScript cannot decode. Explicitly request JPEG instead.
+          const res = await fetch(url, {
+            headers: { "accept": "image/jpeg" },
+          });
+          if (!res.ok) {
+            throw new Error(
+              `Failed to fetch image (${res.status}): ${url}`,
+            );
+          }
           const buf = new Uint8Array(await res.arrayBuffer());
           const decoded = await Image.decode(buf);
           if (Array.isArray(decoded)) {
