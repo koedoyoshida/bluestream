@@ -3,6 +3,7 @@ import { BLUESKY_SERVICE, IS_DEV } from "./constants.ts";
 import { toUTCString, uriToPostLink } from "./utils.ts";
 
 import { sanitize, tagNoVoid as tag } from "markup_tag";
+import { Image } from "imagescript";
 
 import AtoprotoAPI, { AppBskyActorDefs } from "@atproto/api";
 const {
@@ -337,6 +338,89 @@ function genMainContent(
 
 const actors: Record<string, AppBskyActorDefs.ProfileViewDetailed> = {};
 
+const COLLAGE_WIDTH = 800;
+const COLLAGE_HEIGHT = 450;
+const COLLAGE_GAP = 6;
+
+// Resize + crop an image to fill a target box, like CSS `object-fit: cover`.
+function coverFit(image: Image, targetWidth: number, targetHeight: number) {
+  const scale = Math.max(
+    targetWidth / image.width,
+    targetHeight / image.height,
+  );
+  const resizedWidth = Math.max(1, Math.round(image.width * scale));
+  const resizedHeight = Math.max(1, Math.round(image.height * scale));
+  image.resize(resizedWidth, resizedHeight);
+
+  const cropX = Math.max(0, Math.round((resizedWidth - targetWidth) / 2));
+  const cropY = Math.max(0, Math.round((resizedHeight - targetHeight) / 2));
+  image.crop(
+    cropX,
+    cropY,
+    Math.min(targetWidth, resizedWidth),
+    Math.min(targetHeight, resizedHeight),
+  );
+  return image;
+}
+
+// Lay out 2-4 images into a single canvas, similar to how X/Twitter
+// displays multi-photo posts, so that a single-image RSS enclosure can
+// still convey all the attached photos.
+async function composeCollage(images: Image[]) {
+  const canvas = new Image(COLLAGE_WIDTH, COLLAGE_HEIGHT);
+  canvas.fill(Image.rgbaToColor(255, 255, 255, 255));
+
+  type Cell = { x: number; y: number; w: number; h: number };
+  let cells: Cell[];
+
+  const halfW = Math.floor((COLLAGE_WIDTH - COLLAGE_GAP) / 2);
+  const halfH = Math.floor((COLLAGE_HEIGHT - COLLAGE_GAP) / 2);
+
+  if (images.length === 2) {
+    cells = [
+      { x: 0, y: 0, w: halfW, h: COLLAGE_HEIGHT },
+      { x: halfW + COLLAGE_GAP, y: 0, w: halfW, h: COLLAGE_HEIGHT },
+    ];
+  } else if (images.length === 3) {
+    cells = [
+      { x: 0, y: 0, w: halfW, h: COLLAGE_HEIGHT },
+      { x: halfW + COLLAGE_GAP, y: 0, w: halfW, h: halfH },
+      {
+        x: halfW + COLLAGE_GAP,
+        y: halfH + COLLAGE_GAP,
+        w: halfW,
+        h: COLLAGE_HEIGHT - halfH - COLLAGE_GAP,
+      },
+    ];
+  } else {
+    // 4 images
+    cells = [
+      { x: 0, y: 0, w: halfW, h: halfH },
+      { x: halfW + COLLAGE_GAP, y: 0, w: halfW, h: halfH },
+      {
+        x: 0,
+        y: halfH + COLLAGE_GAP,
+        w: halfW,
+        h: COLLAGE_HEIGHT - halfH - COLLAGE_GAP,
+      },
+      {
+        x: halfW + COLLAGE_GAP,
+        y: halfH + COLLAGE_GAP,
+        w: halfW,
+        h: COLLAGE_HEIGHT - halfH - COLLAGE_GAP,
+      },
+    ];
+  }
+
+  images.forEach((image, i) => {
+    const cell = cells[i];
+    coverFit(image, cell.w, cell.h);
+    canvas.composite(image, cell.x, cell.y);
+  });
+
+  return canvas;
+}
+
 async function getActor(
   handleOrDid: string,
 ): Promise<AppBskyActorDefs.ProfileViewDetailed> {
@@ -386,6 +470,43 @@ Deno.serve(async (request: Request) => {
         "cache-control": "public, max-age=86400",
       },
     });
+  }
+  if (pathname === "/collage") {
+    const urls = searchParams.getAll("img");
+    if (urls.length < 2 || urls.length > 4) {
+      return new Response("Invalid number of images for collage", {
+        status: 400,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    try {
+      const images = await Promise.all(
+        urls.map(async (url) => {
+          const res = await fetch(url);
+          const buf = new Uint8Array(await res.arrayBuffer());
+          const decoded = await Image.decode(buf);
+          if (Array.isArray(decoded)) {
+            // Guard against animated images (GIF) decoding to a frame array.
+            return decoded[0];
+          }
+          return decoded;
+        }),
+      );
+      const canvas = await composeCollage(images);
+      const encoded = await canvas.encodeJPEG(80);
+      return new Response(encoded, {
+        headers: {
+          "content-type": "image/jpeg",
+          "cache-control": "public, max-age=86400",
+        },
+      });
+    } catch (error) {
+      console.error("Failed to generate collage", error);
+      return new Response("Failed to generate collage", {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      });
+    }
   }
 
   const { did, handle } = await getActor(pathname.replace(/^\//, ""));
@@ -478,13 +599,29 @@ Deno.serve(async (request: Request) => {
               includeEmbed,
             ),
           ),
-          ...(getPost(post).mediaarr.length > 0
-            ? getPost(post).mediaarr.map((image) =>
-              `<enclosure type="image/jpeg" length="0" url="${
+          ...(() => {
+            const media = getPost(post).mediaarr;
+            if (media.length === 0) {
+              return `<enclosure type="image/png" length="0" url="${origin}/fallback.png"/>`;
+            }
+            if (media.length === 1) {
+              const image = media[0];
+              return `<enclosure type="image/jpeg" length="0" url="${
                 fullMedia ? image.fullsize : image.thumb
-              }"/>`
-            ).join("")
-            : `<enclosure type="image/png" length="0" url="${origin}/fallback.png"/>`),
+              }"/>`;
+            }
+            const collageUrl = `${origin}/collage?` +
+              media
+                .map((image) =>
+                  `img=${
+                    encodeURIComponent(
+                      fullMedia ? image.fullsize : image.thumb,
+                    )
+                  }`
+                )
+                .join("&");
+            return `<enclosure type="image/jpeg" length="0" url="${collageUrl}"/>`;
+          })(),
           tag("link", uriToPostLink(post.uri, usePsky)),
           tag(
             "guid",
