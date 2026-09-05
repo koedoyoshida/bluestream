@@ -459,6 +459,58 @@ async function getActor(
   }
 }
 
+// In-flight generation promises, so a proactive pre-warm (kicked off while
+// building the RSS feed) and a real /collage request arriving moments later
+// for the same images share the same work instead of duplicating it.
+const collageInFlight = new Map<string, Promise<Uint8Array>>();
+
+async function getOrGenerateCollage(urls: string[]): Promise<Uint8Array> {
+  const cacheKey = urls.join("|");
+  const cached = collageCache.get(cacheKey);
+  if (cached) return cached;
+
+  const inFlight = collageInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const promise = (async () => {
+    const images = await Promise.all(
+      urls.map(async (url) => {
+        // Bluesky's CDN decides the image format from a `@format` suffix
+        // on the URL (e.g. `...@jpeg`), not from content negotiation.
+        // Force JPEG so ImageScript (which can't decode WebP/AVIF) always
+        // gets a format it understands, overriding any existing suffix.
+        const jpegUrl = /@[a-zA-Z0-9]+$/.test(url)
+          ? url.replace(/@[a-zA-Z0-9]+$/, "@jpeg")
+          : `${url}@jpeg`;
+        const res = await fetch(jpegUrl, {
+          headers: { "accept": "image/jpeg" },
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to fetch image (${res.status}): ${jpegUrl}`);
+        }
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const decoded = await Image.decode(buf);
+        if (Array.isArray(decoded)) {
+          // Guard against animated images (GIF) decoding to a frame array.
+          return decoded[0];
+        }
+        return decoded;
+      }),
+    );
+    const canvas = await composeCollage(images);
+    const encoded = await canvas.encodeJPEG(80);
+    cacheCollage(cacheKey, encoded);
+    return encoded;
+  })();
+
+  collageInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    collageInFlight.delete(cacheKey);
+  }
+}
+
 Deno.serve(async (request: Request) => {
   const { pathname, searchParams, origin, search } = new URL(request.url);
   if (IS_DEV) {
@@ -487,54 +539,17 @@ Deno.serve(async (request: Request) => {
       },
     });
   }
-  if (pathname === "/collage") {
-    const urls = searchParams.getAll("img");
+if (pathname === "/collage") {
+    const imgsParam = searchParams.get("imgs") ?? "";
+    const urls = imgsParam.split(",").filter((u) => u.length > 0);
     if (urls.length < 2 || urls.length > 4) {
       return new Response("Invalid number of images for collage", {
         status: 400,
         headers: { "content-type": "text/plain" },
       });
     }
-    const cacheKey = urls.join("|");
-    const cached = collageCache.get(cacheKey);
-    if (cached) {
-      return new Response(cached, {
-        headers: {
-          "content-type": "image/jpeg",
-          "cache-control": "public, max-age=86400",
-        },
-      });
-    }
     try {
-      const images = await Promise.all(
-        urls.map(async (url) => {
-          // Bluesky's CDN decides the image format from a `@format` suffix
-          // on the URL (e.g. `...@jpeg`), not from content negotiation.
-          // Force JPEG so ImageScript (which can't decode WebP/AVIF) always
-          // gets a format it understands, overriding any existing suffix.
-          const jpegUrl = /@[a-zA-Z0-9]+$/.test(url)
-            ? url.replace(/@[a-zA-Z0-9]+$/, "@jpeg")
-            : `${url}@jpeg`;
-          const res = await fetch(jpegUrl, {
-            headers: { "accept": "image/jpeg" },
-          });
-          if (!res.ok) {
-            throw new Error(
-              `Failed to fetch image (${res.status}): ${jpegUrl}`,
-            );
-          }
-          const buf = new Uint8Array(await res.arrayBuffer());
-          const decoded = await Image.decode(buf);
-          if (Array.isArray(decoded)) {
-            // Guard against animated images (GIF) decoding to a frame array.
-            return decoded[0];
-          }
-          return decoded;
-        }),
-      );
-      const canvas = await composeCollage(images);
-      const encoded = await canvas.encodeJPEG(80);
-      cacheCollage(cacheKey, encoded);
+      const encoded = await getOrGenerateCollage(urls);
       return new Response(encoded, {
         headers: {
           "content-type": "image/jpeg",
@@ -651,12 +666,19 @@ Deno.serve(async (request: Request) => {
                 fullMedia ? image.fullsize : image.thumb
               }"/>`;
             }
-            const collageUrl = `${origin}/collage?` +
-              media
-                .map((image) =>
-                  `img=${encodeURIComponent(image.thumb)}`
-                )
-                .join("&amp;");
+            const collageUrl = `${origin}/collage?imgs=${
+              encodeURIComponent(
+                media.map((image) => image.thumb).join(","),
+              )
+            }`;
+            // Kick off generation now (without waiting) so that by the time
+            // a consumer (e.g. IFTTT) actually fetches the enclosure URL a
+            // moment later, the result is likely already cached and returns
+            // instantly instead of triggering a slow cold-start compute.
+            getOrGenerateCollage(media.map((image) => image.thumb))
+              .catch((error) => {
+                console.error("Collage pre-warm failed", error);
+              });
             return `<enclosure type="image/jpeg" length="0" url="${collageUrl}"/>`;
           })(),
           tag("link", uriToPostLink(post.uri, usePsky)),
