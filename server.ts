@@ -338,6 +338,22 @@ function genMainContent(
 
 const actors: Record<string, AppBskyActorDefs.ProfileViewDetailed> = {};
 
+// Simple in-memory cache so a retried/re-fetched request for the same set
+// of images (e.g. IFTTT retrying after a timeout) can return instantly
+// instead of re-downloading and re-compositing every time. This only helps
+// within a single warm instance, but that is the common case for retries
+// that happen moments apart.
+const collageCache = new Map<string, Uint8Array>();
+const COLLAGE_CACHE_MAX = 200;
+
+function cacheCollage(key: string, value: Uint8Array) {
+  if (collageCache.size >= COLLAGE_CACHE_MAX) {
+    const oldestKey = collageCache.keys().next().value;
+    if (oldestKey !== undefined) collageCache.delete(oldestKey);
+  }
+  collageCache.set(key, value);
+}
+
 const COLLAGE_WIDTH = 800;
 const COLLAGE_HEIGHT = 450;
 const COLLAGE_GAP = 6;
@@ -479,6 +495,16 @@ Deno.serve(async (request: Request) => {
         headers: { "content-type": "text/plain" },
       });
     }
+    const cacheKey = urls.join("|");
+    const cached = collageCache.get(cacheKey);
+    if (cached) {
+      return new Response(cached, {
+        headers: {
+          "content-type": "image/jpeg",
+          "cache-control": "public, max-age=86400",
+        },
+      });
+    }
     try {
       const images = await Promise.all(
         urls.map(async (url) => {
@@ -494,6 +520,7 @@ Deno.serve(async (request: Request) => {
       );
       const canvas = await composeCollage(images);
       const encoded = await canvas.encodeJPEG(80);
+      cacheCollage(cacheKey, encoded);
       return new Response(encoded, {
         headers: {
           "content-type": "image/jpeg",
@@ -613,11 +640,7 @@ Deno.serve(async (request: Request) => {
             const collageUrl = `${origin}/collage?` +
               media
                 .map((image) =>
-                  `img=${
-                    encodeURIComponent(
-                      fullMedia ? image.fullsize : image.thumb,
-                    )
-                  }`
+                  `img=${encodeURIComponent(image.thumb)}`
                 )
                 .join("&");
             return `<enclosure type="image/jpeg" length="0" url="${collageUrl}"/>`;
