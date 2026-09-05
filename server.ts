@@ -642,7 +642,7 @@ Deno.serve(async (request: Request) => {
                 .map((image) =>
                   `img=${encodeURIComponent(image.thumb)}`
                 )
-                .join("&");
+                .join("&amp;");
             return `<enclosure type="image/jpeg" length="0" url="${collageUrl}"/>`;
           })(),
           tag("link", uriToPostLink(post.uri, usePsky)),
