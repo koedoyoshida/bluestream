@@ -3,7 +3,7 @@
     "std/": "https://deno.land/std@0.204.0/",
     "markup_tag": "https://deno.land/x/markup_tag@0.4.0/mod.ts",
     "@atproto/api": "npm:@atproto/api@0.6.20",
-    "imagescript": "https://deno.land/x/imagescript@1.4.0/mod.ts"
+    "imagescript": "https://deno.land/x/imagescript@1.3.0/mod.ts"
   },
   "tasks": {
     // runner
