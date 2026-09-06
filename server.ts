@@ -671,14 +671,6 @@ if (pathname === "/collage") {
                 media.map((image) => image.thumb).join(","),
               )
             }`;
-            // Kick off generation now (without waiting) so that by the time
-            // a consumer (e.g. IFTTT) actually fetches the enclosure URL a
-            // moment later, the result is likely already cached and returns
-            // instantly instead of triggering a slow cold-start compute.
-            getOrGenerateCollage(media.map((image) => image.thumb))
-              .catch((error) => {
-                console.error("Collage pre-warm failed", error);
-              });
             return `<enclosure type="image/jpeg" length="0" url="${collageUrl}"/>`;
           })(),
           tag("link", uriToPostLink(post.uri, usePsky)),
